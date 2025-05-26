@@ -28,7 +28,7 @@ jobs:
 
       - name: Generate tag
         id: generate-tag
-        uses: |
+        run: |
           SHA=$(echo $GITHUB_SHA | head -c7)
           echo "sha=$SHA" >> $GITHUB_OUTPUT
 
