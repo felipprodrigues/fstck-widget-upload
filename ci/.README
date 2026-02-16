@@ -1,0 +1,286 @@
+# Drizzle Kit - Migrations e Studio
+(Configurações do Drizzle ORM)
+
+Este projeto utiliza o [Drizzle Kit](https://github.com/Drizzle-Team/drizzle-kit) para gerenciar migrações e interagir com o banco de dados através de uma interface gráfica (UI).
+
+## Scripts no `package.json`
+
+O `package.json` contém alguns scripts para facilitar o uso do Drizzle Kit. Abaixo estão os detalhes de cada um deles:
+
+### 1. `db:generate`
+```bash
+"db:generate": "drizzle-kit generate"
+
+"Descrição": Este comando faz a leitura dos esquemas (schemas) definidos no seu projeto e gera os arquivos SQL necessários para a criação ou modificação das tabelas no banco de dados.
+"Uso": Utilize este comando para gerar as migrações quando houver mudanças nos esquemas de banco de dados.
+```
+
+### 2. `db:migrate`
+```bash
+"db:migrate": "drizzle-kit migrate"
+
+"Descrição": Este comando executa os arquivos SQL gerados pelo db:generate no banco de dados, aplicando as migrações e criando ou alterando as tabelas conforme necessário.
+"Uso": Execute este comando para aplicar as migrações no seu banco de dados.
+```
+
+### 3. `db:studio`
+```bash
+"db:studio": "drizzle-kit studio"
+
+"Descrição": Este comando inicia a interface gráfica (UI) do Drizzle Kit, permitindo que você interaja visualmente com o seu banco de dados. A UI facilita a visualização e edição das tabelas, registros e outros aspectos do banco de dados.
+"Uso": Execute este comando para abrir a UI do Drizzle e gerenciar seu banco de dados de forma visual.
+```
+-------
+# Estratégias de ID únicos
+
+Existem formas de termos IDs no banco de dados
+
+### ID auto increment
+  PROS:
+    - Nunca vai se repetir
+    - Ordenável - Ajuda a lidar com problemas de performance.
+    - Pequeno
+
+### Paginacao em offset:
+- Limit e offset.
+  - O porem do limit e offset é que a paginação percorrerá todos os registros até chegar no offset desejado, ou seja, se o offset é 10, ele percorrerá ainda os 10 registros iniciais para então iniciar do ponto 10.
+
+### Paginação em cursores:
+  - Auto increment ordenável fará a busca do ID daquele limit e então buscará no db o ID para incrementar e fazer a captura dos dados desejados partindo daquele ID específico. Vide exemplo abaixo, onde o limite é 5, então a busca pulará os 5 primeiros registros (caixa vermelha) e ocorrerá no ID seguinte acima de 5, sendo ele o 6 (caixa roxa). Em paginação, essa ordenação acaba sendo mais performática qndo se trata de muitas páginas e registros.
+
+![alt text](<Screenshot 2025-01-30 at 8.10.49 AM.png>)
+Em aplicações com muitos dados, é recomendável que utilizemos um ID que seja ordenável.
+
+CONS:
+- Nao publico
+```
+http://minhaapi.com/usuarios/1
+```
+Nesse caso, não pode ser usado como publico porque se o usuário quiser, pode chutar IDs sequenciais ao atual e encontrar dados sensíveis de outros usuários ou da aplicação em si.
+
+ID - UUID
+- Público
+	O UUID é publico porém nao é ordernável
+- Nao ordenável (somente a partir do v7 - ainda nao suportado pelo nodejs)
+- Grande - ocupa muitos mais dados do que o auto increment
+
+------
+# transform-swagger-schema.ts
+(Rota: Upload de imagem)
+### "Descrição":
+
+A função `transformSwaggerSchema` altera a formatação de `application/json` do requestBody para multipart/form-data para que arquivos possam ser enviados na requisicao.
+
+A rota upload-images.ts também necessita de alterações, tendo em vista que no `schema` da rota nao utilizamos `body` mais e consumimos o formato `multipart/form-data` para que arquivos possam ser usados no momento da requisição FE -> BE. No retorno da da rota, definimos alguns parametros que formatam a dimensão do arquivo:
+  ```
+  const uploadedFile = await request.file({
+      limits: {
+        fileSize: 1024 * 1024 * 2, // 2mb
+      },
+    })
+  ```
+
+### toBuffer vs streams:
+(upload-image.ts)
+
+
+O método `toBuffer()` carrega todos os dados do arquivo, guardando a representação desse arquivo em memória. Em suma, quando fazemos o armazenamento do arquivo com esse método, devemos considerar a dimensão e escalabilidade do projeto, vide que o processamento integral dos dados do arquivo podem criar um gargalo em performance.
+Ex: Se 10000 pessoa fazem upload de uma unica imagem de 2mb de tamanho ao mesmo tempo, teriamos 20gb de memória ram necessária somente para armazenar esses arquivos.
+```
+const file = await uploadFile.toBuffer()
+```
+
+Quando o FE faz a requisicao para o BE, enquanto o FE envia a requisicao, o BE começa a processar essa imagem enviando ela também para um serviço terceiro como cloudFlare, aws3, ou seja, guardamos em memória apenas pequenos pedaços da imagem que serão carregados para dentro dos serviços.
+A tipagem do arquivo como `['multipart/form-data']` sugere que a leitura dos dados é feita em pequenos pedaços, diferentemente de `application/json`.
+```
+  await uploadImage({
+    fileName: uploadedFile.filename,
+    contentType: uploadedFile.mimetype,
+    contentStream: uploadedFile.file,
+  })
+```
+
+### Shared/Either.ts
+#### Functional Error Handling
+
+Quando tratamos erros, normalmente usamos o bloco `try&catch`, porém por node nao ser uma linguagem funcional, o tratamento de errors em questão deixa a desejar quando é necessário maior definição nas tratativas.
+Em linguagens como Go/Elixir, por exemplo, cada função assíncrona retorna dois possiveis valores, `[error, result]`.
+
+Para termos o mesmo padrão na aplicação, podemos usar as utility functions documentadas no arquivo `either.ts`, onde temos `left` e `right`, onde o primeiro é erro e o segundo é sucesso.
+
+Na funcão de upload-image (src/app/functions/upload-image.ts), declaramos o retorno dela como:
+```
+Promise<Either<InvalidFileFormat, { url: string }>>
+```
+Sendo o retorno de error (InvalidFileFormat) ou o retorno de sucesso dela como { url: string }, utilizando as utility functions `makeLeft (error)` e `makeRight (success)`
+
+Na rota de upload-image (src/infra/http/routes/upload-image.ts) utilizamos as utility functions `unwrapEither` e `isRight` para definir corretamente o retorno da rota.
+
+`isRight` é declarado inicialmente e, caso os valores atinjam essa condição, retornaremos a resposta com o status 201. Se o valor for erro, então a condição isRight será pulada e caíremos na tratativa de error com `unwrapEither`, onde o resultado já é erro e as utility functions terão tipado corretamente os valores.
+
+```
+  async (request, reply) => {
+    const uploadedFile = await request.file({
+      limits: {
+        fileSize: 1024 * 1024 * 2, // 2mb
+      },
+    })
+
+    if (!uploadedFile) {
+      return reply.status(400).send({ message: 'File is required.' })
+    }
+
+    const result = await uploadImage({
+      fileName: uploadedFile.filename,
+      contentType: uploadedFile.mimetype,
+      contentStream: uploadedFile.file,
+    })
+
+    // Success
+    if (isRight(result)) {
+      return reply.status(201).send()
+    }
+
+    // Error
+    const error = unwrapEither(result)
+    switch (error.constructor.name) {
+      case 'InvalidFileFormat':
+        return reply.status(400).send({ message: error.message })
+    }
+  }
+```
+
+### Validando tamanho do arquivo
+
+Quando lidamos com streams e nao sabemos o tamanho final do arquivo, nós consumimos o arquivo em chunks e, caso o tamanho máximo é atingido antes mesmo de completar, retornamos o erro.
+
+O retorno do erro deve acontecer depois do inicio de upload, porque nao calculamos o file size, apenas permitimos que o upload aconteca em chunks.
+
+```
+  1. Definimos o fileSize máximo
+  const uploadedFile = await request.file({
+    limits: {
+      fileSize: 1024 * 1024 * 2, // 2mb
+    },
+  })
+
+  if (!uploadedFile) {
+    return reply.status(400).send({ message: 'File is required.' })
+  }
+
+  // 2. Inicializa o upload do arquivo
+  const result = await uploadImage({
+    fileName: uploadedFile.filename,
+    contentType: uploadedFile.mimetype,
+    contentStream: uploadedFile.file,
+  })
+
+  // 3. Se o arquivo for maior que 2mb, retornamos essa msg
+  // e o bucket do cloudFlare interromperá e apagará o arquivo
+  // em 7 dias (configuracao opcional)
+  if (uploadedFile.file.truncated) {
+    return reply.status(400).send({
+      message: 'File size limit reached.',
+    })
+  }
+```
+
+### Cursores do Postgres
+O cursor do postgres retorna dados em chunks até finalizar a operação, assim como é uma stream dentro do node
+
+- Drizzle não tem suporte a cursores, logo não é possível usar drizzleORM para tal.
+
+```
+const cursor = pg.unsafe()
+```
+
+O método unsafe permite escrever uma query diretamente no sql (sql injection) (`pg.unsafe('SELECT * FROM uploads')`), porém ao invés de fazê-la diretamente com a declaração da query, podemos usar a query gerada pelo drizzle que já faz a sanitização dessa query.
+
+Ao invés de declararmos a função com await, podemos adicionar ao final da query o método `.toSQL()`, que retornará o sql e os parametros enviados.
+
+```
+const { sql, params } = db
+    .select({
+      id: schema.uploads.id,
+      name: schema.uploads.name,
+      remoteUrl: schema.uploads.remoteUrl,
+      createdAt: schema.uploads.createdAt,
+    })
+    .from(schema.uploads)
+    .where(
+      searchQuery ? ilike(schema.uploads.name, `%${searchQuery}%`) : undefined
+    ).toSQL()
+
+    const cursor = pg.unsafe(sql, params as string[]).cursor(50)
+```
+
+Passamos os valores da query do Drizzle como parâmetros do cursor e usamos o método `cursor()` para que os dados sejam retornados em batches. Nesse caso usamos o valor `cursor(50)`, para que sejam streamlined 50 itens por batch. Esse valor pode ser removido ou alterado, a depender da performance.
+
+### Config CI
+
+1. Executa todas as vezes que PR são abertas:
+```
+name: E2E Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, reopened, labeled, unlabeled, synchronize]
+```
+
+2. Executamos dentro do ubuntu:
+` runs-on: ubuntu-latest `
+
+3. Dependencias para rodar os testes, simulamos o docker-compose com:
+```
+services:
+  postgres:
+    image: postgres:13
+    ports:
+      - 5432:5432
+    env:
+      POSTGRES_USER: docker
+      POSTGRES_PASSWORD: docker
+      POSTGRES_DB: upload_test
+    options: >-
+      --health-cmd pg_isready
+      --health-interval 10s
+      --health-timeout 5s
+      --health-retries 5
+```
+POSTGRES_DB: upload_test equivale ao valor da DATABASE_URL declarada em .env.test
+
+4. Steps:
+Baixa o código:
+```
+ - uses: actions/checkout@v4
+```
+
+5. Faz o setup do pnpm:
+```
+- uses: pnpm/action-setup@v4
+  name: Install pnpm
+  with:
+    version: 9
+    run_install: false
+```
+
+6. Configura o cache:
+```
+- name: Install Node.js
+  uses: actions/setup-node@v4
+  with:
+    node-version: 20
+    cache: "pnpm"
+```
+
+7. Instala pnpm sem alterar o arquivo .lock:
+```
+- run: pnpm install --frozen-lockfile
+```
+
+8. Roda os testes:
+```
+- run: pnpm run test
+```
